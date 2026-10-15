@@ -183,6 +183,9 @@ enum Cmd {
 
     /// Make an authenticated request to any API endpoint
     Api(cmd::api::ApiArgs),
+    /// Update fenders to the latest release
+    #[command(visible_alias = "upgrade")]
+    Update(cmd::update::UpdateArgs),
     /// Print a shell completion script
     Completion {
         #[arg(value_enum)]
@@ -216,13 +219,13 @@ fn report(e: &anyhow::Error) {
             ui::hint(&h);
         }
         if let Some(r) = &api.request_id {
-            ui::hint(&format!("request id: {r}"));
+            ui::hint(&format!("request id: {}", ui::sanitize(r)));
         }
         return;
     }
-    ui::error(&e.to_string());
+    ui::error(&ui::sanitize(&e.to_string()));
     for cause in e.chain().skip(1) {
-        ui::hint(&format!("caused by: {cause}"));
+        ui::hint(&format!("caused by: {}", ui::sanitize(&cause.to_string())));
     }
 }
 
@@ -241,6 +244,11 @@ fn run(cli: Cli) -> Result<()> {
             &mut std::io::stdout(),
         );
         return Ok(());
+    }
+
+    if let Cmd::Update(a) = command {
+        let json = cli.global.json || cli.global.output == Format::Json;
+        return cmd::update::run(a, json);
     }
 
     let g = cli.global;
@@ -289,7 +297,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::HttpsAccess(c) => project::https(&mut app, c),
         Cmd::Schedule(c) => project::schedule(&mut app, c),
         Cmd::Api(a) => api::run(&mut app, a),
-        Cmd::Completion { .. } => unreachable!(),
+        Cmd::Completion { .. } | Cmd::Update(_) => unreachable!(),
     }
 }
 

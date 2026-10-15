@@ -4,6 +4,7 @@ pub mod deploy;
 pub mod logs;
 pub mod project;
 pub mod session;
+pub mod update;
 
 use std::io::{IsTerminal, Read};
 use std::path::Path;

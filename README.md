@@ -16,6 +16,27 @@ It ships as a single native binary with no runtime dependencies.
   ▀████▀
 ```
 
+## Install
+
+macOS and Linux (x86_64 and arm64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SyncMyOrders/fenders-cli/main/install.sh | sh
+```
+
+The script picks the right binary for your machine, verifies its SHA-256 checksum, and installs
+it to `~/.local/bin` (or wherever `fenders` already is). Options go after `sh -s --`:
+
+```sh
+curl -fsSL …/install.sh | sh -s -- --version v0.2.0   # a specific release
+curl -fsSL …/install.sh | sh -s -- --dir /usr/local/bin  # another directory (uses sudo if needed)
+curl -fsSL …/install.sh | sh -s -- --uninstall        # remove (add --purge to drop ~/.config/fenders)
+```
+
+**Update** with `fenders update` (`--check` only reports), or re-run the install command.
+On Windows, download the `.zip` from [Releases](https://github.com/SyncMyOrders/fenders-cli/releases).
+From source: `cargo install --git https://github.com/SyncMyOrders/fenders-cli`.
+
 ## Quick start
 
 ```sh
@@ -42,7 +63,7 @@ fenders deploy app.wasm --app app -e GREETING=hello --size medium
 | App history | `versions …`, `releases …`, `runs …`, `events APP`, `triggers get \| set` |
 | Project | `projects list \| create`, `workspaces list`, `artifacts list \| get \| inspect \| upload`, `connections list \| get \| create https\|tcp \| revoke`, `secrets list \| get \| create`, `ops list \| get \| wait`, `usage`, `sizes`, `https-access show \| validate`, `schedule preview` |
 | Anything else | `api PATH [-X METHOD] [-d JSON\|@file]` with `{workspace}`/`{project}` placeholders |
-| Shell | `completion bash\|zsh\|fish\|powershell\|elvish` |
+| Shell | `completion bash\|zsh\|fish\|powershell\|elvish`, `update [--check]` |
 
 Run `fenders <command> --help` for flags and examples.
 
@@ -63,6 +84,8 @@ Run `fenders <command> --help` for flags and examples.
 - **Output.** Tables and colour on a terminal; JSON when piped, or with `--json` / `-o json`.
   `fenders logs` writes one JSON record per line, with base64 output decoded into `text`.
   `NO_COLOR` and `--no-color` are honoured. Progress and errors go to stderr.
+- **Untrusted text.** App log output and API strings have terminal control characters
+  escaped before printing, so they can't inject escape sequences into your terminal.
 - **Secrets.** Values are never accepted as flags: they're read from stdin, `--from-file`,
   or a hidden prompt.
 - **Errors.** API errors show the message, a hint about what to do, and the `request_id`.
@@ -93,8 +116,12 @@ cargo test                     # unit tests + HTTP behaviour against a mock serv
 ```
 
 Release binaries are built natively per platform by `.github/workflows/release.yml` when a
-`v*` tag is pushed: macOS (arm64, x86_64), Linux (static musl, x86_64 and arm64) and Windows.
-TLS uses rustls, so there is no OpenSSL dependency.
+`v*` tag is pushed: macOS (arm64, x86_64), Linux (static musl, x86_64 and arm64) and Windows,
+published with a `SHA256SUMS` file that `install.sh` verifies. TLS uses rustls, so there is
+no OpenSSL dependency. CI uses only `actions/*`, `actions-rust-lang/setup-rust-toolchain` and
+`Swatinem/rust-cache`, each pinned to a commit SHA.
+
+To cut a release, bump `version` in `Cargo.toml`, then `git tag v0.1.0 && git push --tags`.
 
 ## Layout
 
@@ -104,8 +131,9 @@ src/
   client.rs      HTTP client: auth, idempotency, retries, error mapping, wasm upload
   app.rs         context resolution, name → id lookup, pagination, operation polling
   output.rs      tables / records / JSON rendering of untyped API records
-  ui.rs          brand palette, banner, spinners, prompts theme
+  ui.rs          brand palette, banner, spinners, prompts theme, output sanitising
   auth.rs        API key storage (keychain or 0600 file)
   config.rs      config file
   cmd/           one module per command group
+install.sh       installer / updater / uninstaller for macOS and Linux
 ```
