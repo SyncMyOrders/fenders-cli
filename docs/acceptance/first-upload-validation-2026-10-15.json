@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-15T12:17:05.783Z",
+  "source_commit": "a35d645d124c2f3d3d6a2e59875084aab37070f5",
+  "candidate_version": "0.2.1",
+  "published": false,
+  "origin": "https://platform.fenders.io",
+  "project": "f296b80397cc4972a1d4d11d6ca15069",
+  "app": "b5c8d61c04df430fbe8e4c9901efeba8",
+  "user_report_request_id": "79fbe31a9a7b4ceb97323e57d4a6e1c8",
+  "reproduced_request_id": "1b157319873d4d638aa33b5463556bbc",
+  "fixture": "Distinct copies of the maintained command fixture with unique custom sections; rejected case adds an invalid section. Every case uploaded a new digest.",
+  "cases": {
+    "before": {
+      "sha256": "8ad85c1151fa42002860870d77ea1b3a1ae01b0a5738185526277bf4d5359a68",
+      "exit": 1,
+      "inspection_reads": 1,
+      "deployment_requests": 1,
+      "version_requests": 0
+    },
+    "after": {
+      "sha256": "083c66e65a09cd4a2d105298ab13f5cd0a316e4a40d23f381939f8239d67b188",
+      "exit": 0,
+      "inspection_reads": 3,
+      "deployment_requests": 1,
+      "version_requests": 0
+    },
+    "release": {
+      "sha256": "1920d5fe20b5a5212ec146dcd6c433d05c3955ae90dcf190a971db1a7aaf0aa5",
+      "exit": 0,
+      "inspection_reads": 3,
+      "deployment_requests": 0,
+      "version_requests": 1
+    },
+    "rejected": {
+      "sha256": "375ca878093237e9bac22489f1e1a27924fbfd7bbc206dd06b12148d07b1757d",
+      "exit": 1,
+      "inspection_reads": 2,
+      "deployment_requests": 0,
+      "version_requests": 0
+    }
+  },
+  "result": {
+    "app_count": 1,
+    "command_runs": 0,
+    "executions": 0,
+    "active_version": 2
+  },
+  "cleanup": "Verification app read back as stopped.",
+  "commands": [
+    "fenders deploy after.wasm --name cli-race-after --timeout 60",
+    "fenders deploy release.wasm --app APP --no-wait --skip-inspection --timeout 60",
+    "fenders deploy rejected.wasm --name cli-race-rejected --skip-inspection --timeout 30"
+  ],
+  "validation": [
+    "cargo test --locked",
+    "cargo clippy --all-targets --locked -- -D warnings",
+    "cargo build --release --locked"
+  ],
+  "notes": [
+    "CLI 0.2.0 reproduced the first-upload 409.",
+    "Fixed new-app and existing-app paths each polled inspection three times before submitting their mutation.",
+    "Invalid input created no app, even with --skip-inspection.",
+    "Timeout, unavailable compiler, forbidden inspection and unknown state are covered by regression tests.",
+    "Real worker validation; deployment and activation created no command runs or executions."
+  ],
+  "retained_private_evidence": "/Users/volodymyrrudyi/work/fenders/run/cli-validation-20261015/"
+}
