@@ -1,0 +1,302 @@
+//! Client and context behaviour against a mock Fenders API.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use httpmock::HttpMockRequest;
+use httpmock::prelude::*;
+use serde_json::json;
+
+use crate::app::{App, revision_of};
+use crate::client::{ApiError, Client};
+use crate::config::Config;
+use crate::output::Out;
+
+const WS: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PJ: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const OP: &str = "cccccccccccccccccccccccccccccccc";
+const APP: &str = "dddddddddddddddddddddddddddddddd";
+
+fn client(server: &MockServer) -> Client {
+    Client::new(&server.base_url(), Some("test-key".into()), false)
+        .unwrap()
+        .with_retry_base(Duration::from_millis(1))
+}
+
+fn app(server: &MockServer) -> App {
+    let cfg = Config {
+        workspace: Some(WS.into()),
+        project: Some(PJ.into()),
+        ..Default::default()
+    };
+    App::new(
+        client(server),
+        Out { json: true },
+        cfg,
+        server.base_url(),
+        None,
+        None,
+    )
+}
+
+fn proj() -> String {
+    format!("/workspaces/{WS}/projects/{PJ}")
+}
+
+#[test]
+fn sends_bearer_and_parses_json() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/me")
+            .header("authorization", "Bearer test-key");
+        then.status(200)
+            .json_body(json!({"id": "k1", "name": "ci"}));
+    });
+    let v = client(&server).get("/me", &[]).unwrap();
+    m.assert();
+    assert_eq!(v["name"], "ci");
+}
+
+#[test]
+fn maps_error_schema() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/workspaces");
+        then.status(403).json_body(json!({
+            "error": "permission_denied",
+            "code": "forbidden",
+            "request_id": "0123456789abcdef0123456789abcdef"
+        }));
+    });
+    let err = client(&server).get("/workspaces", &[]).unwrap_err();
+    let api = err.downcast_ref::<ApiError>().expect("ApiError");
+    assert_eq!(api.status, 403);
+    assert_eq!(api.code, "forbidden");
+    assert_eq!(
+        api.request_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(api.to_string(), "Permission denied (forbidden, HTTP 403)");
+    assert!(api.hint().unwrap().contains("permission"));
+}
+
+#[test]
+fn not_logged_in_fails_without_a_request() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.any_request();
+        then.status(200);
+    });
+    let c = Client::new(&server.base_url(), None, false).unwrap();
+    let err = c.get("/me", &[]).unwrap_err();
+    assert_eq!(err.downcast_ref::<ApiError>().unwrap().status, 401);
+    m.assert_calls(0);
+}
+
+/// Record the Idempotency-Key of every request a mock sees.
+fn key_recorder() -> (
+    Arc<Mutex<HashSet<String>>>,
+    impl Fn(&HttpMockRequest) -> bool + Send + Sync + 'static,
+) {
+    let keys = Arc::new(Mutex::new(HashSet::new()));
+    let k = keys.clone();
+    let matcher = move |req: &HttpMockRequest| {
+        if let Some(v) = req.headers().get("idempotency-key") {
+            k.lock().unwrap().insert(v.to_str().unwrap().to_string());
+        }
+        true
+    };
+    (keys, matcher)
+}
+
+#[test]
+fn retries_reuse_one_idempotency_key() {
+    let server = MockServer::start();
+    let (keys, matcher) = key_recorder();
+    let m = server.mock(|when, then| {
+        when.method(POST)
+            .path("/thing")
+            .header_exists("idempotency-key")
+            .is_true(matcher);
+        then.status(503)
+            .json_body(json!({"error": "busy", "code": "unavailable", "request_id": "x"}));
+    });
+    let err = client(&server).post("/thing", json!({})).unwrap_err();
+    m.assert_calls(3);
+    assert_eq!(
+        keys.lock().unwrap().len(),
+        1,
+        "all retries must carry the same key"
+    );
+    assert_eq!(err.downcast_ref::<ApiError>().unwrap().status, 503);
+}
+
+#[test]
+fn distinct_requests_get_distinct_idempotency_keys() {
+    let server = MockServer::start();
+    let (keys, matcher) = key_recorder();
+    server.mock(|when, then| {
+        when.method(POST).is_true(matcher);
+        then.status(202)
+            .json_body(json!({"id": OP, "state": "pending"}));
+    });
+    let c = client(&server);
+    c.post("/artifacts", json!({})).unwrap();
+    c.post("/apps/deploy", json!({})).unwrap();
+    assert_eq!(
+        keys.lock().unwrap().len(),
+        2,
+        "upload and deploy must not share a key"
+    );
+}
+
+#[test]
+fn truncates_an_oversized_final_page() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/v");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "1"}, {"id": "2"}, {"id": "3"}], "next": null}));
+    });
+    let (items, more) = app(&server)
+        .collect("/v", vec![], "before", None, Some(2))
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(more);
+}
+
+#[test]
+fn does_not_retry_client_errors() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/thing");
+        then.status(422)
+            .json_body(json!({"error": "bad", "code": "invalid", "request_id": "x"}));
+    });
+    assert!(client(&server).post("/thing", json!({})).is_err());
+    m.assert_calls(1);
+}
+
+#[test]
+fn paginates_with_string_cursor() {
+    let server = MockServer::start();
+    let path = format!("{}/apps", proj());
+    let p1 = server.mock(|when, then| {
+        when.method(GET).path(&path).query_param_missing("before");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "1"}, {"id": "2"}], "next": "c1"}));
+    });
+    let p2 = server.mock(|when, then| {
+        when.method(GET).path(&path).query_param("before", "c1");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "3"}], "next": null}));
+    });
+    let a = app(&server);
+    let (items, more) = a.collect(&path, vec![], "before", Some(100), None).unwrap();
+    assert_eq!(items.len(), 3);
+    assert!(!more);
+    p1.assert();
+    p2.assert();
+}
+
+#[test]
+fn stops_at_the_requested_limit() {
+    let server = MockServer::start();
+    let path = format!("{}/apps", proj());
+    let m = server.mock(|when, then| {
+        when.method(GET).path(&path).query_param("limit", "2");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "1"}, {"id": "2"}], "next": "c1"}));
+    });
+    let (items, more) = app(&server)
+        .collect(&path, vec![], "before", Some(100), Some(2))
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(more);
+    m.assert_calls(1);
+}
+
+#[test]
+fn paginates_with_integer_cursor_and_no_limit_param() {
+    let server = MockServer::start();
+    let path = format!("{}/apps/{APP}/versions", proj());
+    let p1 = server.mock(|when, then| {
+        when.method(GET)
+            .path(&path)
+            .query_param_missing("before")
+            .query_param_missing("limit");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "v9"}], "next": 5}));
+    });
+    let p2 = server.mock(|when, then| {
+        when.method(GET).path(&path).query_param("before", "5");
+        then.status(200)
+            .json_body(json!({"items": [{"id": "v4"}], "next": null}));
+    });
+    let (items, _) = app(&server)
+        .collect(&path, vec![], "before", None, None)
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    p1.assert();
+    p2.assert();
+}
+
+#[test]
+fn waits_for_operation_success() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET).path(format!("{}/operations/{OP}", proj()));
+        then.status(200).json_body(
+            json!({"id": OP, "kind": "deploy", "resource_id": APP, "state": "succeeded"}),
+        );
+    });
+    let mut a = app(&server);
+    let pending = json!({"id": OP, "kind": "deploy", "resource_id": APP, "state": "pending"});
+    let done = a
+        .wait_op(&pending, "Deploy", Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(done["state"], "succeeded");
+    m.assert();
+}
+
+#[test]
+fn reports_operation_failure() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path(format!("{}/operations/{OP}", proj()));
+        then.status(200).json_body(
+            json!({"id": OP, "kind": "deploy", "resource_id": APP, "state": "failed", "error": "component trapped"}),
+        );
+    });
+    let mut a = app(&server);
+    let pending = json!({"id": OP, "kind": "deploy", "resource_id": APP, "state": "pending"});
+    let err = a
+        .wait_op(&pending, "Deploy", Duration::from_secs(10))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("component trapped"));
+}
+
+#[test]
+fn resolves_app_names_to_ids() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path(format!("{}/apps", proj())).query_param("search", "hello");
+        then.status(200).json_body(json!({
+            "items": [{"id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "name": "hello-world"}, {"id": APP, "name": "hello"}],
+            "next": null
+        }));
+    });
+    let mut a = app(&server);
+    assert_eq!(a.app_id("hello").unwrap(), APP);
+    assert_eq!(a.app_id(APP).unwrap(), APP);
+    assert!(a.app_id("nope").is_err());
+}
+
+#[test]
+fn finds_revisions() {
+    assert_eq!(revision_of(&json!({"revision": 4})), Some(4));
+    assert_eq!(revision_of(&json!({"app": {"revision": 7}})), Some(7));
+    assert_eq!(revision_of(&json!({"name": "x"})), None);
+}
