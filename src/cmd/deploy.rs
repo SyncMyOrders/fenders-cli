@@ -230,7 +230,9 @@ fn inspect(
     // Validation is required before either creating an app or attaching a version.
     // --no-wait only skips waiting for the resulting deployment operation.
     let result = (|| -> Result<Value> {
-        let started = Instant::now();
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .context("validation timeout is too large")?;
         let mut delay = Duration::from_millis(400);
         let timed_out = || {
             anyhow!(
@@ -239,21 +241,26 @@ fn inspect(
             )
         };
         loop {
-            let insp = app
-                .client
-                .get(&path, &[])
-                .context("could not inspect the component; no deployment was submitted")?;
+            if Instant::now() >= deadline {
+                return Err(timed_out());
+            }
+            let response = app.client.get_until(&path, &[], deadline);
+            if Instant::now() >= deadline {
+                return Err(timed_out());
+            }
+            let insp =
+                response.context("could not inspect the component; no deployment was submitted")?;
             match insp.get("state").and_then(Value::as_str) {
                 Some("valid") => return Ok(insp),
                 Some("pending" | "validating") => {
                     // compiler-unavailable is retryable while the server keeps it pending.
-                    let remaining = timeout.saturating_sub(started.elapsed());
+                    let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
                         return Err(timed_out());
                     }
                     std::thread::sleep(delay.min(remaining));
                     delay = (delay * 3 / 2).min(Duration::from_secs(3));
-                    if started.elapsed() >= timeout {
+                    if Instant::now() >= deadline {
                         return Err(timed_out());
                     }
                 }

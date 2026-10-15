@@ -656,12 +656,97 @@ fn deploy_never_submits_on_unvalidated_or_unreadable_inspection() {
             crate::cmd::deploy::AppsDeployArgs {
                 name: "first-upload".into(),
                 artifact: artifact.into(),
-                opts: deploy_options(0),
+                opts: deploy_options(1),
             },
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains(expected), "{err:#}");
-        inspection.assert_calls(1);
+        assert!(inspection.calls() >= 1);
         deployment.assert_calls(0);
     }
+}
+
+#[test]
+fn validation_deadline_prevents_late_success_retry_after_and_zero_budget_deploys() {
+    use std::time::Instant;
+    for (status, delay, timeout, expected_reads) in [
+        (200, Duration::from_secs(3), 1, 1),
+        (503, Duration::ZERO, 1, 1),
+        (200, Duration::ZERO, 0, 0),
+    ] {
+        let server = MockServer::start();
+        let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/apps", proj()));
+            then.status(200).json_body(json!({"items":[]}));
+        });
+        let inspection = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+            then.status(status)
+                .delay(delay)
+                .header("retry-after", "10")
+                .json_body(json!({"state":"valid","inspection":{"http":true,"command":false}}));
+        });
+        let deployment = server.mock(|when, then| {
+            when.method(POST).path(format!("{}/apps/deploy", proj()));
+            then.status(202)
+                .json_body(json!({"id":OP,"state":"pending"}));
+        });
+        let started = Instant::now();
+        let err = crate::cmd::deploy::run_apps(
+            &mut app(&server),
+            crate::cmd::deploy::AppsDeployArgs {
+                name: "late-validation".into(),
+                artifact: artifact.into(),
+                opts: deploy_options(timeout),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "deadline was not bounded"
+        );
+        assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+        inspection.assert_calls(expected_reads);
+        deployment.assert_calls(0);
+    }
+}
+
+#[test]
+fn request_deadline_includes_response_body_reads() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        let body = r#"{"state":"valid"}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        stream.write_all(&body.as_bytes()[..1]).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = stream.write_all(&body.as_bytes()[1..]);
+    });
+    let client = Client::new(&format!("http://{address}"), Some("test-key".into()), false).unwrap();
+    let started = Instant::now();
+    let result = client.get_until("/inspection", &[], started + Duration::from_secs(1));
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert!(result.is_err(), "late valid response escaped the deadline");
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "body read was not bounded: {elapsed:?}"
+    );
 }
