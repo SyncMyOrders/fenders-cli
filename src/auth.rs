@@ -15,6 +15,8 @@ const SERVICE: &str = "fenders-cli";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Env,
+    // Only produced where a system keychain is used (macOS, Windows).
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     Keychain,
     File,
 }
