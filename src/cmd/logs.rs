@@ -116,6 +116,8 @@ fn render(rec: &Value, show_run: bool, json: bool) {
     let prefix = prefix.join(" ");
     let text = text_of(rec).unwrap_or_else(|| rec.to_string());
     for line in text.trim_end_matches('\n').split('\n') {
+        // App output is untrusted: neutralise terminal escape sequences.
+        let line = ui::sanitize(line.strip_suffix('\r').unwrap_or(line));
         if prefix.is_empty() {
             println!("{line}");
         } else {
@@ -264,6 +266,16 @@ mod tests {
             text_of(&json!({"message": "not base64!"})).as_deref(),
             Some("not base64!")
         );
+    }
+
+    #[test]
+    fn neutralises_terminal_escapes() {
+        // Clear screen + OSC 52 clipboard write + BEL.
+        let evil = "hi\x1b[2J\x1b]52;c;ZXZpbA==\x07";
+        let safe = ui::sanitize(evil);
+        assert!(!safe.chars().any(|c| c.is_control()));
+        assert_eq!(safe, "hi\\u{1b}[2J\\u{1b}]52;c;ZXZpbA==\\u{7}");
+        assert_eq!(ui::sanitize("tab\tok"), "tab\tok");
     }
 
     #[test]

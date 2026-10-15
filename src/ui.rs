@@ -187,6 +187,27 @@ pub fn theme() -> dialoguer::theme::ColorfulTheme {
     t
 }
 
+/// Make untrusted text (API fields, app log output) safe to print: control
+/// characters such as ESC, BEL and C1 codes are shown escaped instead of being
+/// interpreted by the terminal, so remote data can't move the cursor, retitle
+/// the window or write the clipboard. Tabs are kept.
+pub fn sanitize(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.chars().any(|c| c.is_control() && c != '\t') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\t' => out.push(c),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// "3 min ago" style rendering for RFC 3339 timestamps.
 pub fn relative_time(s: &str) -> Option<String> {
     let t = chrono::DateTime::parse_from_rfc3339(s).ok()?;

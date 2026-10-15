@@ -101,7 +101,7 @@ impl Out {
             }
         }
         t.set_header(columns.iter().map(|c| {
-            let cell = Cell::new(c.replace('_', " ").to_uppercase());
+            let cell = Cell::new(ui::sanitize(&c.replace('_', " ").to_uppercase()));
             if color {
                 cell.fg(Color::Rgb {
                     r: ui::ORANGE.0,
@@ -209,7 +209,7 @@ pub fn scalar(v: &Value) -> String {
     match v {
         Value::Null => "—".into(),
         Value::Bool(b) => if *b { "yes" } else { "no" }.into(),
-        Value::String(s) => s.clone(),
+        Value::String(s) => ui::sanitize(s).into_owned(),
         Value::Array(a) => a.iter().map(scalar).collect::<Vec<_>>().join(", "),
         other => other.to_string(),
     }
@@ -283,6 +283,7 @@ fn print_kv(v: &Value, indent: usize) {
         .filter(|(_, v)| !nested(v))
         .chain(o.iter().filter(|(_, v)| nested(v)));
     for (k, val) in ordered {
+        let k: &str = &ui::sanitize(k);
         let key = ui::dim(&format!("{k:width$}"), To::Out);
         match val {
             Value::Object(m) if m.is_empty() => println!("{pad}{key}  {}", ui::dim("{}", To::Out)),

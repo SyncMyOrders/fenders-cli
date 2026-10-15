@@ -25,7 +25,7 @@ pub fn name_of(v: &Value) -> Option<String> {
     ["name", "slug", "title", "display_name"]
         .iter()
         .find_map(|k| v.get(*k).and_then(Value::as_str))
-        .map(str::to_string)
+        .map(|s| ui::sanitize(s).into_owned())
 }
 
 fn label(v: &Value) -> String {

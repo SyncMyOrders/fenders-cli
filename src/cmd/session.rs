@@ -35,7 +35,7 @@ fn identity(me: &Value) -> String {
     ["email", "name", "key_name", "label"]
         .iter()
         .find_map(|k| me.get(*k).and_then(Value::as_str))
-        .map(str::to_string)
+        .map(|s| ui::sanitize(s).into_owned())
         .or_else(|| me.get("key").and_then(name_of))
         .or_else(|| id_of(me))
         .unwrap_or_else(|| "API key".into())

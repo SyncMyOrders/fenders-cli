@@ -29,7 +29,7 @@ impl std::fmt::Display for ApiError {
             f,
             "{} ({}, HTTP {})",
             humanize(&self.message),
-            self.code,
+            crate::ui::sanitize(&self.code),
             self.status
         )
     }
@@ -38,7 +38,7 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 fn humanize(s: &str) -> String {
-    let s = s.replace('_', " ");
+    let s = crate::ui::sanitize(s).replace('_', " ");
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),

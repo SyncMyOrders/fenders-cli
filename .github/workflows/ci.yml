@@ -2,10 +2,63 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - '**'
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
   pull_request:
+    branches:
+      - main
+
+# Supersede in-flight runs for the same ref instead of letting each push run
+# to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default-deny: every job only reads source. Per-job overrides go at the job
+# level if ever required.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # File/line info in panics without full DWARF: faster builds, smaller caches.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+# Third-party actions are pinned to commit SHAs (tag in the trailing comment)
+# so a moved or compromised tag can't change what runs here.
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          components: clippy, rustfmt
+          cache: false
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Only main writes; PR runs read main's cache without adding to the
+          # per-repo cache budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Lint install script
+        run: shellcheck install.sh
+
   test:
     strategy:
       fail-fast: false
@@ -13,11 +66,46 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: false
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run tests
+        run: cargo test --locked
+
+  # The static musl binary is what install.sh ships to Linux users; make sure
+  # it keeps building on every change, not just at release time.
+  build-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          target: x86_64-unknown-linux-musl
+          cache: false
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          file target/x86_64-unknown-linux-musl/release/fenders
+          target/x86_64-unknown-linux-musl/release/fenders --version
