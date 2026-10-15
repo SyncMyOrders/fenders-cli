@@ -13,7 +13,8 @@ use crate::client::Body;
 #[derive(Args, Debug)]
 pub struct ApiArgs {
     /// Path relative to the API base, e.g. /me or /workspaces/{workspace}/projects.
-    /// {workspace} and {project} are filled from the current context.
+    /// {workspace} and {project} are filled from the current context. Absolute
+    /// URLs are only accepted on the API's own origin.
     pub path: String,
     /// HTTP method
     #[arg(short = 'X', long, default_value = "GET")]

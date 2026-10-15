@@ -164,6 +164,58 @@ impl App {
         Ok(id)
     }
 
+    /// The workspace and project this invocation would use, without prompting:
+    /// `(id, name, overridden)` each, where `overridden` means it came from a
+    /// flag or environment variable rather than the saved config.
+    #[allow(clippy::type_complexity)]
+    pub fn effective_context(
+        &self,
+    ) -> (
+        Option<(String, Option<String>, bool)>,
+        Option<(String, Option<String>, bool)>,
+    ) {
+        let resolve_ws = |f: &str| match self.resolve_workspace(f) {
+            Ok((id, name)) => (id, name.or_else(|| (!is_id(f)).then(|| f.to_string()))),
+            Err(_) => (f.to_string(), None),
+        };
+        let ws = match &self.ws_flag {
+            Some(f) => Some({
+                let (id, name) = resolve_ws(f);
+                let name = name.or_else(|| {
+                    (self.cfg.workspace.as_deref() == Some(id.as_str()))
+                        .then(|| self.cfg.workspace_name.clone())
+                        .flatten()
+                });
+                (id, name, true)
+            }),
+            None => self
+                .cfg
+                .workspace
+                .clone()
+                .map(|id| (id, self.cfg.workspace_name.clone(), false)),
+        };
+        // A saved project only applies to the saved workspace (as in `project()`).
+        let same_ws = ws.as_ref().map(|w| w.0.as_str()) == self.cfg.workspace.as_deref();
+        let proj = match (&self.proj_flag, &ws) {
+            (Some(f), Some((ws_id, _, _))) => Some(match self.resolve_project(ws_id, f) {
+                Ok((id, name)) => (
+                    id,
+                    name.or_else(|| (!is_id(f)).then(|| f.to_string())),
+                    true,
+                ),
+                Err(_) => (f.to_string(), None, true),
+            }),
+            (Some(f), None) => Some((f.clone(), None, true)),
+            (None, _) if same_ws => self
+                .cfg
+                .project
+                .clone()
+                .map(|id| (id, self.cfg.project_name.clone(), false)),
+            (None, _) => None,
+        };
+        (ws, proj)
+    }
+
     pub fn ws_path(&mut self) -> Result<String> {
         Ok(format!("/workspaces/{}", seg(&self.workspace()?)))
     }

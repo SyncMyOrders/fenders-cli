@@ -208,7 +208,13 @@ fn release_existing(
         &format!("{p}/versions"),
         json!({ "artifact_id": artifact_id, "expected_revision": rev }),
     )?;
-    let Some(done) = app.finish_op(op, "Create version", &args.wait)? else {
+    // The release needs the new version's id, so always wait for the version;
+    // --no-wait applies to the release, which is the step the user asked for.
+    let version_wait = WaitArgs {
+        no_wait: false,
+        ..args.wait.clone()
+    };
+    let Some(done) = app.finish_op(op, "Create version", &version_wait)? else {
         return Ok(());
     };
     let version_id = done

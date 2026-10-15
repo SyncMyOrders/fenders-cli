@@ -74,8 +74,16 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+      # install.sh ships with each release so `fenders update` runs the
+      # installer from that exact release, verified against SHA256SUMS.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          path: src
       - name: Checksums
-        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+        run: |
+          cp src/install.sh dist/
+          cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

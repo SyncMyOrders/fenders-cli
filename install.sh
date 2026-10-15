@@ -157,8 +157,9 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 info "Downloading $BIN $version for $target"
 fetch "$base/$asset" "$tmp/$asset" || die "download failed: $base/$asset"
 
-# Verify the checksum when the release publishes one.
-if fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
+# Every release publishes SHA256SUMS; refuse anything that doesn't verify.
+fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "could not download SHA256SUMS for $version"
+{
   expected="$(awk -v f="$asset" '$2 == f || $2 == "*"f {print $1}' "$tmp/SHA256SUMS")"
   [ -n "$expected" ] || die "$asset is not listed in SHA256SUMS"
   if have sha256sum; then
@@ -170,9 +171,7 @@ if fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
   fi
   [ "$expected" = "$actual" ] || die "checksum mismatch for $asset"
   ok "Checksum verified"
-else
-  info "No SHA256SUMS published for $version; skipping verification"
-fi
+}
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 src="$tmp/$BIN-$version-$target/$BIN"

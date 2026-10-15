@@ -300,3 +300,81 @@ fn finds_revisions() {
     assert_eq!(revision_of(&json!({"app": {"revision": 7}})), Some(7));
     assert_eq!(revision_of(&json!({"name": "x"})), None);
 }
+
+#[test]
+fn never_sends_the_api_key_to_another_origin() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.any_request();
+        then.status(200).json_body(json!({}));
+    });
+    let c = client(&server);
+    for evil in [
+        "https://attacker.example/collect",
+        "HTTP://attacker.example/collect",
+        "//attacker.example/collect",
+        "http://127.0.0.1:1/other-port",
+    ] {
+        let err = c.get(evil, &[]).unwrap_err().to_string();
+        assert!(
+            err.contains("refusing to send the API key"),
+            "{evil}: {err}"
+        );
+    }
+    m.assert_calls(0);
+    // The API's own origin is still allowed as an absolute URL.
+    c.get(&format!("{}/me", server.base_url()), &[]).unwrap();
+    m.assert_calls(1);
+}
+
+#[test]
+fn context_reflects_workspace_and_project_overrides() {
+    let server = MockServer::start();
+    let other_ws = "9".repeat(32);
+    let other_pj = "8".repeat(32);
+    server.mock(|when, then| {
+        when.method(GET).path("/workspaces");
+        then.status(200).json_body(json!([
+            {"id": WS, "name": "acme"},
+            {"id": other_ws, "name": "acme-labs"}
+        ]));
+    });
+    server.mock(|when, then| {
+        when.method(GET)
+            .path(format!("/workspaces/{other_ws}/projects"));
+        then.status(200)
+            .json_body(json!([{"id": other_pj, "name": "staging"}]));
+    });
+    let cfg = Config {
+        workspace: Some(WS.into()),
+        project: Some(PJ.into()),
+        ..Default::default()
+    };
+    let mk = |ws: Option<&str>, pj: Option<&str>| {
+        App::new(
+            client(&server),
+            Out { json: true },
+            cfg.clone(),
+            server.base_url(),
+            ws.map(Into::into),
+            pj.map(Into::into),
+        )
+    };
+
+    // No overrides: the saved context.
+    let (ws, pj) = mk(None, None).effective_context();
+    assert_eq!(ws.unwrap(), (WS.to_string(), None, false));
+    assert_eq!(pj.unwrap().0, PJ);
+
+    // -w by name: resolved, and the saved project (from another workspace) no longer applies.
+    let (ws, pj) = mk(Some("acme-labs"), None).effective_context();
+    assert_eq!(
+        ws.unwrap(),
+        (other_ws.clone(), Some("acme-labs".into()), true)
+    );
+    assert!(pj.is_none());
+
+    // -w and -p together.
+    let (_, pj) = mk(Some("acme-labs"), Some("staging")).effective_context();
+    assert_eq!(pj.unwrap(), (other_pj, Some("staging".into()), true));
+}

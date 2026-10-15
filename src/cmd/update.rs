@@ -1,6 +1,12 @@
 //! `fenders update` — check for and install a newer release via install.sh,
 //! replacing the binary that is currently running.
+//!
+//! The installer is taken from the target release itself and must match that
+//! release's SHA256SUMS before it runs. It is piped to `sh` on stdin, so no
+//! script is ever written to a shared temp directory.
 
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -26,23 +32,69 @@ fn releases_url() -> String {
         .unwrap_or_else(|_| format!("https://github.com/{REPO}/releases"))
 }
 
-fn script_url() -> String {
-    std::env::var("FENDERS_INSTALL_SCRIPT_URL")
-        .unwrap_or_else(|_| format!("https://raw.githubusercontent.com/{REPO}/main/install.sh"))
-}
-
-fn http() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
+/// `redirects`: release downloads redirect to GitHub's CDN; the
+/// `/releases/latest` lookup must not follow its redirect.
+fn http(redirects: bool) -> Result<reqwest::blocking::Client> {
+    let policy = if redirects {
+        reqwest::redirect::Policy::limited(5)
+    } else {
+        reqwest::redirect::Policy::none()
+    };
+    let mut b = reqwest::blocking::Client::builder()
         .user_agent(concat!("fenders-cli/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
+        .redirect(policy);
+    // Only an explicitly configured mirror may use plain HTTP.
+    if std::env::var_os("FENDERS_RELEASES_URL").is_none() {
+        b = b.https_only(true);
+    }
+    Ok(b.build()?)
+}
+
+fn download(url: &str) -> Result<Vec<u8>> {
+    Ok(http(true)?
+        .get(url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .with_context(|| format!("could not download {url}"))?
+        .bytes()?
+        .to_vec())
+}
+
+/// The expected SHA-256 for `file` from a SHA256SUMS listing.
+fn expected_sum<'a>(sums: &'a str, file: &str) -> Option<&'a str> {
+    sums.lines().find_map(|l| {
+        let mut parts = l.split_whitespace();
+        let (hash, name) = (parts.next()?, parts.next()?);
+        (name.trim_start_matches('*') == file).then_some(hash)
+    })
+}
+
+/// Download install.sh from the `tag` release and verify it against that
+/// release's SHA256SUMS.
+fn verified_installer(tag: &str) -> Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    let base = format!("{}/download/{tag}", releases_url());
+    let sums = String::from_utf8(download(&format!("{base}/SHA256SUMS"))?)
+        .context("SHA256SUMS is not text")?;
+    let want = expected_sum(&sums, "install.sh")
+        .with_context(|| format!("release {tag} does not list install.sh in SHA256SUMS"))?
+        .to_ascii_lowercase();
+    let script = download(&format!("{base}/install.sh"))?;
+    let got: String = Sha256::digest(&script)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if got != want {
+        bail!("install.sh from release {tag} failed checksum verification");
+    }
+    Ok(script)
 }
 
 /// The latest release tag, read from the `/releases/latest` redirect (no API
 /// rate limits).
 fn latest_tag() -> Result<String> {
-    let resp = http()?
+    let resp = http(false)?
         .get(format!("{}/latest", releases_url()))
         .send()
         .context("could not reach GitHub to check for updates")?;
@@ -117,27 +169,20 @@ pub fn run(args: UpdateArgs, json_out: bool) -> Result<()> {
         );
     }
 
-    // Fetch the installer and run it against our own directory.
-    let script = http()?
-        .get(script_url())
-        .send()
-        .and_then(|r| r.error_for_status())
-        .context("could not download the installer")?
-        .text()?;
-    if !script.starts_with("#!/bin/sh") {
-        bail!("unexpected installer contents from {}", script_url());
-    }
-    let tmp = std::env::temp_dir().join(format!("fenders-install-{}.sh", std::process::id()));
-    std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("sh")
-        .arg(&tmp)
-        .arg("--dir")
+    // Run the verified installer from this release against our own directory.
+    let script = verified_installer(&target)?;
+    let mut child = Command::new("sh")
+        .args(["-s", "--", "--version", &target, "--dir"])
         .arg(dir)
-        .arg("--version")
-        .arg(&target)
-        .status();
-    let _ = std::fs::remove_file(&tmp);
-    let status = status.context("could not run sh")?;
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("could not run sh")?;
+    child
+        .stdin
+        .take()
+        .context("no stdin for sh")?
+        .write_all(&script)?;
+    let status = child.wait()?;
     if !status.success() {
         bail!("the installer failed (exit status {status})");
     }
@@ -146,7 +191,15 @@ pub fn run(args: UpdateArgs, json_out: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{expected_sum, parse};
+
+    #[test]
+    fn reads_checksums() {
+        let sums = "abc123  fenders-v1-x.tar.gz\ndef456 *install.sh\n";
+        assert_eq!(expected_sum(sums, "install.sh"), Some("def456"));
+        assert_eq!(expected_sum(sums, "fenders-v1-x.tar.gz"), Some("abc123"));
+        assert_eq!(expected_sum(sums, "missing"), None);
+    }
 
     #[test]
     fn compares_versions() {

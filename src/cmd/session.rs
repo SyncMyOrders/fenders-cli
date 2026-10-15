@@ -202,35 +202,46 @@ fn choose(app: &mut App, target: Option<&str>) -> Result<()> {
 
 pub fn context(app: &mut App) -> Result<()> {
     let source = auth::token(&app.api_url).map(|(_, s)| s.to_string());
-    let ctx = json!({
-        "api_url": app.api_url,
-        "workspace": app.cfg.workspace,
-        "workspace_name": app.cfg.workspace_name,
-        "project": app.cfg.project,
-        "project_name": app.cfg.project_name,
-        "auth": source.clone().unwrap_or_else(|| "not logged in".into()),
-        "config": crate::config::path().display().to_string(),
-    });
+    let (ws, proj) = app.effective_context();
+    let as_json = |c: &Option<(String, Option<String>, bool)>| match c {
+        Some((id, name, overridden)) => json!({
+            "id": id,
+            "name": name,
+            "source": if *overridden { "flag or environment" } else { "config" },
+        }),
+        None => Value::Null,
+    };
     if app.out.json {
-        app.out.print_json(&ctx);
+        app.out.print_json(&json!({
+            "api_url": app.api_url,
+            "workspace": as_json(&ws),
+            "project": as_json(&proj),
+            "auth": source.clone().unwrap_or_else(|| "not logged in".into()),
+            "config": crate::config::path().display().to_string(),
+        }));
         return Ok(());
     }
     let row = |k: &str, v: String| println!("  {}  {v}", ui::dim(&format!("{k:<10}"), To::Out));
-    let named = |name: &Option<String>, id: &Option<String>| match (name, id) {
-        (Some(n), Some(i)) => format!("{} {}", ui::bold(n, To::Out), ui::dim(i, To::Out)),
-        (None, Some(i)) => i.clone(),
-        _ => ui::dim("not set — run `fenders use`", To::Out),
+    let named = |c: &Option<(String, Option<String>, bool)>| match c {
+        Some((id, name, overridden)) => {
+            let mut s = match name {
+                Some(n) => format!("{} {}", ui::bold(n, To::Out), ui::dim(id, To::Out)),
+                None => id.clone(),
+            };
+            if *overridden {
+                s.push_str(&format!(" {}", ui::accent("(override)", To::Out)));
+            }
+            s
+        }
+        None => ui::dim("not set — run `fenders use`", To::Out),
     };
     row("api", app.api_url.clone());
     row(
         "auth",
         source.unwrap_or_else(|| ui::dim("not logged in — run `fenders auth login`", To::Out)),
     );
-    row(
-        "workspace",
-        named(&app.cfg.workspace_name, &app.cfg.workspace),
-    );
-    row("project", named(&app.cfg.project_name, &app.cfg.project));
+    row("workspace", named(&ws));
+    row("project", named(&proj));
     row("config", crate::config::path().display().to_string());
     Ok(())
 }

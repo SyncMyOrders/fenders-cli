@@ -112,14 +112,30 @@ impl Client {
         self
     }
 
-    fn url(&self, path: &str) -> String {
-        if path.starts_with("http://") || path.starts_with("https://") {
-            path.to_string()
-        } else if path.starts_with('/') {
+    /// Resolve `path` against the API base. Absolute URLs are only accepted
+    /// on the API's own origin: the bearer token is attached to every
+    /// request, so any other host would receive the user's API key.
+    fn url(&self, path: &str) -> Result<String> {
+        let lower = path.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") || path.starts_with("//") {
+            let base = reqwest::Url::parse(&self.base)?;
+            let target = reqwest::Url::parse(path)
+                .or_else(|_| base.join(path))
+                .map_err(|e| anyhow::anyhow!("invalid URL {path}: {e}"))?;
+            if target.origin() != base.origin() {
+                anyhow::bail!(
+                    "refusing to send the API key to {} — only {} is allowed",
+                    target.origin().ascii_serialization(),
+                    base.origin().ascii_serialization()
+                );
+            }
+            return Ok(target.to_string());
+        }
+        Ok(if path.starts_with('/') {
             format!("{}{}", self.base, path)
         } else {
             format!("{}/{}", self.base, path)
-        }
+        })
     }
 
     pub fn get(&self, path: &str, query: &[(String, String)]) -> Result<Value> {
@@ -158,7 +174,7 @@ impl Client {
             }
             .into());
         };
-        let url = self.url(path);
+        let url = self.url(path)?;
         let idempotency_key = uuid::Uuid::new_v4().simple().to_string();
         let mut attempt = 0;
         loop {
