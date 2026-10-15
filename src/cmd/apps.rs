@@ -6,7 +6,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use super::{ConfigArgs, ListArgs, WaitArgs, artifact_ref};
-use crate::app::{App, compact, id_of};
+use crate::app::{App, compact, hinted, id_of};
 use crate::client::seg;
 use crate::ui::{self, To};
 
@@ -34,7 +34,9 @@ pub enum AppsCmd {
     /// Show an app and its readiness
     #[command(visible_alias = "show")]
     Get { app: String },
-    /// Create an app draft from an artifact (id, name or .wasm path)
+    /// Deploy a component as a running app and print its endpoint
+    Deploy(crate::cmd::deploy::AppsDeployArgs),
+    /// Create a draft app (not runnable until released — see `apps deploy`)
     Create {
         name: String,
         #[arg(long, value_name = "ARTIFACT|FILE")]
@@ -47,6 +49,9 @@ pub enum AppsCmd {
     /// Start (enable) an app
     Start {
         app: String,
+        /// If the app has never been released, release its latest version first
+        #[arg(long)]
+        release: bool,
         #[arg(long, value_name = "N")]
         expected_revision: Option<i64>,
         #[command(flatten)]
@@ -111,11 +116,12 @@ pub enum ReleasesCmd {
     },
     /// Show a release
     Get { app: String, release: String },
-    /// Release a version, optionally with new configuration
+    /// Release a version (default: the latest), optionally with new configuration
     Create {
         app: String,
+        /// Version id or number (default: the app's latest version)
         #[arg(long = "version", value_name = "VERSION")]
-        version_id: String,
+        version_id: Option<String>,
         #[command(flatten)]
         config: ConfigArgs,
         #[arg(long, value_name = "N")]
@@ -225,6 +231,7 @@ pub fn apps(app: &mut App, cmd: AppsCmd) -> Result<()> {
             let rec = app.client.get(&p, &[])?;
             app.out.record(&rec);
         }
+        AppsCmd::Deploy(args) => crate::cmd::deploy::run_apps(app, args)?,
         AppsCmd::Create {
             name,
             artifact,
@@ -241,13 +248,24 @@ pub fn apps(app: &mut App, cmd: AppsCmd) -> Result<()> {
             let op = app.client.post(&path, body)?;
             if let Some(done) = app.finish_op(op, &format!("Create app {name}"), &wait)? {
                 show_resource(app, &done, "apps")?;
+                if !app.out.json {
+                    ui::hint("This is a draft. To run it:");
+                    ui::hint(&format!(
+                        "  fenders triggers set {name} --http true   # or --manual true"
+                    ));
+                    ui::hint(&format!("  fenders apps start {name} --release"));
+                    ui::hint(&format!(
+                        "Next time, `fenders apps deploy {name} --artifact app.wasm` does all of this in one step."
+                    ));
+                }
             }
         }
         AppsCmd::Start {
             app: a,
+            release,
             expected_revision,
             wait,
-        } => lifecycle(app, &a, "enabled", expected_revision, &wait)?,
+        } => start(app, &a, release, expected_revision, &wait)?,
         AppsCmd::Stop {
             app: a,
             expected_revision,
@@ -292,6 +310,114 @@ pub fn apps(app: &mut App, cmd: AppsCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether an app has a release that can be started.
+fn has_release(rec: &Value) -> bool {
+    [
+        "active_release_id",
+        "target_release_id",
+        "active_release",
+        "target_release",
+    ]
+    .iter()
+    .any(|k| rec.get(*k).is_some_and(|v| !v.is_null()))
+}
+
+fn start(app: &mut App, a: &str, release: bool, rev: Option<i64>, wait: &WaitArgs) -> Result<()> {
+    let p = app.app_path(a)?;
+    let rec = app.client.get(&p, &[])?;
+    if !has_release(&rec) {
+        if !release {
+            return Err(hinted(
+                format!("{a} has never been released, so there is nothing to start"),
+                &[
+                    format!(
+                        "Release its latest version and start it: fenders apps start {a} --release"
+                    ),
+                    format!(
+                        "Or release a specific version:          fenders releases create {a} --version N"
+                    ),
+                ],
+            ));
+        }
+        // The release must exist before the start can be requested.
+        let release_wait = WaitArgs {
+            no_wait: false,
+            ..wait.clone()
+        };
+        create_release(app, a, None, None, None, &release_wait)?;
+    }
+    let triggers = rec.get("triggers");
+    let on = |k: &str| {
+        triggers
+            .and_then(|t| t.get(k))
+            .is_some_and(|v| v.as_bool() == Some(true) || v.is_object())
+    };
+    if triggers.is_some() && !on("http") && !on("manual") && !on("schedule") {
+        ui::warn(&format!(
+            "{a} has no triggers enabled, so nothing can invoke it once started. Enable one with `fenders triggers set {a} --http true` (or --manual true)."
+        ));
+    }
+    lifecycle(app, a, "enabled", rev, wait)
+}
+
+/// Release a version of an app. `version` may be an id or a version number;
+/// `None` means the app's latest version.
+fn create_release(
+    app: &mut App,
+    a: &str,
+    version: Option<&str>,
+    config: Option<Value>,
+    rev: Option<i64>,
+    wait: &WaitArgs,
+) -> Result<Option<Value>> {
+    let p = app.app_path(a)?;
+    let version_id = match version {
+        Some(v) if crate::app::is_id(v) => v.to_string(),
+        Some(v) => {
+            let n: i64 = v.trim_start_matches('v').parse().map_err(|_| {
+                anyhow::anyhow!("--version must be a version id or number, got \"{v}\"")
+            })?;
+            let (versions, _) =
+                app.collect(&format!("{p}/versions"), vec![], "before", None, None)?;
+            versions
+                .iter()
+                .find(|x| x.get("number").and_then(Value::as_i64) == Some(n))
+                .and_then(id_of)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{a} has no version {n} (see `fenders versions list {a}`)")
+                })?
+        }
+        None => {
+            let rec = app.client.get(&p, &[])?;
+            rec.get("latest_code")
+                .and_then(id_of)
+                .or_else(|| {
+                    // Fall back to the newest entry in the versions list.
+                    let (v, _) = app
+                        .collect(&format!("{p}/versions"), vec![], "before", None, Some(1))
+                        .ok()?;
+                    v.first().and_then(id_of)
+                })
+                .ok_or_else(|| {
+                    hinted(
+                        format!("{a} has no versions to release"),
+                        &[format!(
+                            "Create one: fenders versions create {a} --artifact app.wasm"
+                        )],
+                    )
+                })?
+        }
+    };
+    let rev = app.revision(&p, rev)?;
+    let body = compact(json!({
+        "version_id": version_id,
+        "configuration": config,
+        "expected_revision": rev,
+    }));
+    let op = app.client.post(&format!("{p}/releases"), body)?;
+    app.finish_op(op, &format!("Release {a}"), wait)
 }
 
 fn lifecycle(
@@ -423,15 +549,15 @@ pub fn releases(app: &mut App, cmd: ReleasesCmd) -> Result<()> {
             expected_revision,
             wait,
         } => {
-            let p = app.app_path(&a)?;
-            let rev = app.revision(&p, expected_revision)?;
-            let body = compact(json!({
-                "version_id": version_id,
-                "configuration": config.to_json(app)?,
-                "expected_revision": rev,
-            }));
-            let op = app.client.post(&format!("{p}/releases"), body)?;
-            if let Some(done) = app.finish_op(op, "Release", &wait)? {
+            let config = config.to_json(app)?;
+            if let Some(done) = create_release(
+                app,
+                &a,
+                version_id.as_deref(),
+                config,
+                expected_revision,
+                &wait,
+            )? {
                 app.out.record(&done);
             }
         }

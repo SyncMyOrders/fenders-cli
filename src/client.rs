@@ -47,13 +47,22 @@ fn humanize(s: &str) -> String {
 }
 
 impl ApiError {
+    fn is_revision_conflict(&self) -> bool {
+        let text = format!("{} {}", self.code, self.message).to_ascii_lowercase();
+        self.status == 412
+            || ["revision", "stale", "precondition"]
+                .iter()
+                .any(|w| text.contains(w))
+    }
+
     /// A suggestion for what to do next.
     pub fn hint(&self) -> Option<String> {
         Some(match self.status {
             401 => "Your API key is missing, expired or revoked. Run `fenders auth login` or set FENDERS_API_KEY.".into(),
             403 => "This API key lacks the permission (or project scope) for this action. Workspace owners manage keys in the console under Settings → API keys.".into(),
             404 => "Check the ids involved — `fenders context` shows the current workspace and project.".into(),
-            409 | 412 => "The resource changed since it was read (revision mismatch). Re-run the command to use the latest revision.".into(),
+            409 | 412 if self.is_revision_conflict() => "The resource changed since it was read (revision mismatch). Re-run the command to use the latest revision.".into(),
+            409 => "The request conflicts with the resource's current state (see the message above).".into(),
             413 => "The upload is too large. WASI components may be at most 16 MiB.".into(),
             429 => "Rate limited. Wait a moment and try again.".into(),
             s if s >= 500 => "The Fenders API had a problem. Retry shortly; include the request id if you contact support.".into(),

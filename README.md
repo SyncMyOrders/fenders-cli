@@ -41,7 +41,7 @@ From source: `cargo install --git https://github.com/SyncMyOrders/fenders-cli`.
 ```sh
 fenders auth login                       # paste a workspace API key (Settings → API keys)
 fenders use                              # pick a workspace and project
-fenders deploy app.wasm --http           # upload → inspect → deploy → wait → print URL
+fenders apps deploy hello --artifact hello.wasm   # upload → inspect → deploy → print URL
 fenders logs app -f                      # follow its output
 fenders run app --logs                   # trigger a manual run and print its logs
 ```
@@ -58,7 +58,7 @@ fenders deploy app.wasm --app app -e GREETING=hello --size medium
 |---|---|
 | Session | `auth login \| logout \| status \| token`, `use [WORKSPACE[/PROJECT]]`, `context` |
 | Ship | `deploy FILE.wasm`, `run APP`, `logs APP [-f]` |
-| Apps | `apps list \| get \| create \| start \| stop \| url \| connections \| set-connections` |
+| Apps | `apps deploy \| list \| get \| create \| start [--release] \| stop \| url \| connections \| set-connections` |
 | App history | `versions …`, `releases …`, `runs …`, `events APP`, `triggers get \| set` |
 | Project | `projects list \| create`, `workspaces list`, `artifacts list \| get \| inspect \| upload`, `connections list \| get \| create https\|tcp \| revoke`, `secrets list \| get \| create`, `ops list \| get \| wait`, `usage`, `sizes`, `https-access show \| validate`, `schedule preview` |
 | Anything else | `api PATH [-X METHOD] [-d JSON\|@file]` with `{workspace}`/`{project}` placeholders |

@@ -11,6 +11,29 @@ use crate::config::Config;
 use crate::output::Out;
 use crate::ui::{self, To};
 
+/// A user-facing error with suggestions printed beneath it.
+#[derive(Debug)]
+pub struct Hinted {
+    pub message: String,
+    pub hints: Vec<String>,
+}
+
+impl std::fmt::Display for Hinted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Hinted {}
+
+pub fn hinted(message: impl Into<String>, hints: &[String]) -> anyhow::Error {
+    Hinted {
+        message: message.into(),
+        hints: hints.to_vec(),
+    }
+    .into()
+}
+
 pub fn is_id(s: &str) -> bool {
     s.len() == 32
         && s.bytes()

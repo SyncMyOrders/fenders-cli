@@ -378,3 +378,162 @@ fn context_reflects_workspace_and_project_overrides() {
     let (_, pj) = mk(Some("acme-labs"), Some("staging")).effective_context();
     assert_eq!(pj.unwrap(), (other_pj, Some("staging".into()), true));
 }
+
+mod starting_apps {
+    use super::*;
+    use crate::cmd::WaitArgs;
+    use crate::cmd::apps::{AppsCmd, ReleasesCmd, apps, releases};
+
+    const V1: &str = "11111111111111111111111111111111";
+    const V2: &str = "22222222222222222222222222222222";
+
+    fn wait() -> WaitArgs {
+        WaitArgs {
+            no_wait: false,
+            timeout: 10,
+        }
+    }
+
+    fn draft_app(server: &MockServer) {
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/apps/{APP}", proj()));
+            then.status(200).json_body(json!({
+                "id": APP, "name": "http-demo", "state": "draft", "revision": 1,
+                "active_release_id": null, "target_release_id": null,
+                "latest_code": {"id": V2, "number": 2},
+                "triggers": {"http": true, "manual": false, "schedule": null, "revision": 1}
+            }));
+        });
+    }
+
+    fn ops_succeed(server: &MockServer) {
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/operations/{OP}", proj()));
+            then.status(200).json_body(
+                json!({"id": OP, "kind": "x", "resource_id": APP, "state": "succeeded"}),
+            );
+        });
+    }
+
+    #[test]
+    fn start_without_release_explains_instead_of_calling_the_api() {
+        let server = MockServer::start();
+        draft_app(&server);
+        let patch = server.mock(|when, then| {
+            when.method(PATCH);
+            then.status(409);
+        });
+        let mut a = app(&server);
+        let err = apps(
+            &mut a,
+            AppsCmd::Start {
+                app: APP.into(),
+                release: false,
+                expected_revision: None,
+                wait: wait(),
+            },
+        )
+        .unwrap_err();
+        let h = err
+            .downcast_ref::<crate::app::Hinted>()
+            .expect("hinted error");
+        assert!(h.message.contains("never been released"));
+        assert!(h.hints.iter().any(|x| x.contains("--release")));
+        patch.assert_calls(0);
+    }
+
+    #[test]
+    fn start_with_release_releases_latest_version_then_starts() {
+        let server = MockServer::start();
+        draft_app(&server);
+        ops_succeed(&server);
+        let release = server.mock(|when, then| {
+            when.method(POST)
+                .path(format!("{}/apps/{APP}/releases", proj()))
+                .json_body_includes(format!(
+                    r#"{{"version_id": "{V2}", "expected_revision": 1}}"#
+                ));
+            then.status(202).json_body(
+                json!({"id": OP, "kind": "release", "resource_id": APP, "state": "pending"}),
+            );
+        });
+        let start = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(format!("{}/apps/{APP}", proj()))
+                .json_body_includes(r#"{"desired": "enabled"}"#);
+            then.status(202).json_body(
+                json!({"id": OP, "kind": "start", "resource_id": APP, "state": "pending"}),
+            );
+        });
+        let mut a = app(&server);
+        apps(
+            &mut a,
+            AppsCmd::Start {
+                app: APP.into(),
+                release: true,
+                expected_revision: None,
+                wait: wait(),
+            },
+        )
+        .unwrap();
+        release.assert();
+        start.assert();
+    }
+
+    #[test]
+    fn release_accepts_a_version_number() {
+        let server = MockServer::start();
+        draft_app(&server);
+        ops_succeed(&server);
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("{}/apps/{APP}/versions", proj()));
+            then.status(200).json_body(json!({
+                "items": [{"id": V2, "number": 2}, {"id": V1, "number": 1}], "next": null
+            }));
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST)
+                .path(format!("{}/apps/{APP}/releases", proj()))
+                .json_body_includes(format!(r#"{{"version_id": "{V1}"}}"#));
+            then.status(202).json_body(
+                json!({"id": OP, "kind": "release", "resource_id": APP, "state": "pending"}),
+            );
+        });
+        let mut a = app(&server);
+        releases(
+            &mut a,
+            ReleasesCmd::Create {
+                app: APP.into(),
+                version_id: Some("1".into()),
+                config: Default::default(),
+                expected_revision: None,
+                wait: wait(),
+            },
+        )
+        .unwrap();
+        release.assert();
+    }
+}
+
+#[test]
+fn conflict_hints_match_the_conflict() {
+    let err = |code: &str, message: &str| ApiError {
+        status: 409,
+        code: code.into(),
+        message: message.into(),
+        request_id: None,
+    };
+    assert!(
+        err("conflict", "App has no active release")
+            .hint()
+            .unwrap()
+            .contains("current state")
+    );
+    assert!(
+        err("revision_mismatch", "stale")
+            .hint()
+            .unwrap()
+            .contains("revision mismatch")
+    );
+}

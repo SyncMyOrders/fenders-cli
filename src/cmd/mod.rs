@@ -205,6 +205,9 @@ pub fn check_inspection(insp: &Value) -> Option<String> {
             )
             .then(|| s.to_string())
         });
+    if let Some(e) = insp.get("error").and_then(Value::as_str) {
+        return Some(format!("the component did not pass validation: {e}"));
+    }
     let invalid_flag = insp.get("valid").and_then(Value::as_bool) == Some(false);
     let errors: Vec<String> = ["errors", "problems"]
         .iter()

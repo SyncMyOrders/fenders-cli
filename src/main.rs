@@ -48,10 +48,10 @@ fn styles() -> Styles {
 
 const AFTER_HELP: &str = "\
 Get started:
-  fenders auth login              Store your workspace API key
-  fenders use                     Pick a workspace and project
-  fenders deploy app.wasm --http  Upload and deploy a WASI component
-  fenders logs app -f             Follow its output
+  fenders auth login                          Store your workspace API key
+  fenders use                                 Pick a workspace and project
+  fenders apps deploy app --artifact app.wasm Deploy a component; prints its URL
+  fenders logs app -f                         Follow its output
 
 Docs: https://fenders.io";
 
@@ -220,6 +220,13 @@ fn report(e: &anyhow::Error) {
         }
         if let Some(r) = &api.request_id {
             ui::hint(&format!("request id: {}", ui::sanitize(r)));
+        }
+        return;
+    }
+    if let Some(h) = e.downcast_ref::<app::Hinted>() {
+        ui::error(&ui::sanitize(&h.message));
+        for hint in &h.hints {
+            ui::hint(hint);
         }
         return;
     }
