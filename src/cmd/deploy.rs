@@ -6,6 +6,7 @@
 //! supports: an HTTP component gets an HTTP endpoint without extra flags.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
@@ -40,7 +41,7 @@ pub struct DeployOpts {
     /// Allow an external connection (name or id), optionally with an env prefix
     #[arg(long = "connection", value_name = "CONNECTION[:PREFIX]")]
     pub connections: Vec<String>,
-    /// Deploy even if artifact inspection reports problems
+    /// Ignore advisory inspection problems; server validation must still pass
     #[arg(long)]
     pub skip_inspection: bool,
     #[command(flatten)]
@@ -112,7 +113,12 @@ fn deploy(
         app.resolve_in("artifacts", source, "artifact")
             .with_context(|| format!("{source} is neither a file nor an uploaded artifact"))?
     };
-    let caps = inspect(app, &artifact_id, opts.skip_inspection)?;
+    let caps = inspect(
+        app,
+        &artifact_id,
+        opts.skip_inspection,
+        Duration::from_secs(opts.wait.timeout),
+    )?;
 
     match target {
         Some((app_id, name)) => release_existing(app, opts, &app_id, &name, &artifact_id),
@@ -209,45 +215,81 @@ pub fn triggers_for(opts: &DeployOpts, caps: Capabilities) -> (bool, bool) {
     (http, manual)
 }
 
-fn inspect(app: &mut App, artifact_id: &str, skip: bool) -> Result<Capabilities> {
+fn inspect(
+    app: &mut App,
+    artifact_id: &str,
+    skip: bool,
+    timeout: Duration,
+) -> Result<Capabilities> {
     let path = format!(
         "{}/artifacts/{}/inspection",
         app.proj_path()?,
         seg(artifact_id)
     );
-    let pb = ui::spinner("Inspecting component");
-    let insp = app.client.get(&path, &[]);
-    pb.finish_and_clear();
-    match insp {
-        Ok(insp) => {
-            match check_inspection(&insp) {
-                Some(problem) if !skip => {
-                    if !app.out.json {
-                        app.out.record(&insp);
-                    }
-                    bail!("{problem} (use --skip-inspection to deploy anyway)");
-                }
-                Some(problem) => ui::warn(&problem),
-                None => {
-                    let caps = capabilities(&insp);
-                    let kinds: Vec<&str> = [(caps.http, "HTTP handler"), (caps.command, "command")]
-                        .into_iter()
-                        .filter_map(|(on, k)| (on == Some(true)).then_some(k))
-                        .collect();
-                    if kinds.is_empty() {
-                        ui::success("Component inspected");
-                    } else {
-                        ui::success(&format!("Component inspected: {}", kinds.join(", ")));
-                    }
-                }
+    let pb = ui::spinner("Waiting for component validation");
+    // Validation is required before either creating an app or attaching a version.
+    // --no-wait only skips waiting for the resulting deployment operation.
+    let result = (|| -> Result<Value> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .context("validation timeout is too large")?;
+        let mut delay = Duration::from_millis(400);
+        let timed_out = || {
+            anyhow!(
+                "timed out after {}s waiting for component {artifact_id} validation; no deployment was submitted. Check it with: fenders artifacts inspect {artifact_id}",
+                timeout.as_secs()
+            )
+        };
+        loop {
+            if Instant::now() >= deadline {
+                return Err(timed_out());
             }
-            Ok(capabilities(&insp))
+            let response = app.client.get_until(&path, &[], deadline);
+            if Instant::now() >= deadline {
+                return Err(timed_out());
+            }
+            let insp =
+                response.context("could not inspect the component; no deployment was submitted")?;
+            match insp.get("state").and_then(Value::as_str) {
+                Some("valid") => return Ok(insp),
+                Some("pending" | "validating") => {
+                    // compiler-unavailable is retryable while the server keeps it pending.
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(timed_out());
+                    }
+                    std::thread::sleep(delay.min(remaining));
+                    delay = (delay * 3 / 2).min(Duration::from_secs(3));
+                    if Instant::now() >= deadline {
+                        return Err(timed_out());
+                    }
+                }
+                Some("rejected" | "invalid" | "failed" | "error") => {
+                    bail!(
+                        "{}; no deployment was submitted",
+                        check_inspection(&insp)
+                            .unwrap_or_else(|| "the component did not pass validation".into())
+                    );
+                }
+                _ => bail!("unexpected component validation state; no deployment was submitted"),
+            }
         }
-        Err(e) => {
-            ui::warn(&format!("could not inspect the component: {e}"));
-            Ok(Capabilities::default())
+    })();
+    pb.finish_and_clear();
+    let insp = result?;
+    if let Some(problem) = check_inspection(&insp) {
+        if !skip {
+            bail!("{problem}; no deployment was submitted");
         }
+        ui::warn(&problem);
     }
+    let caps = capabilities(&insp);
+    let kinds: Vec<&str> = [(caps.http, "HTTP handler"), (caps.command, "command")]
+        .into_iter()
+        .filter_map(|(on, kind)| (on == Some(true)).then_some(kind))
+        .collect();
+    ui::success(&format!("Component validated: {}", kinds.join(", ")));
+    Ok(caps)
 }
 
 fn deploy_new(

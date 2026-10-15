@@ -56,7 +56,7 @@ pub struct WaitArgs {
     /// Return immediately with the operation instead of waiting for it
     #[arg(long)]
     pub no_wait: bool,
-    /// Seconds to wait for the operation to finish
+    /// Seconds to wait for each required validation or operation
     #[arg(long, default_value_t = 600, value_name = "SECS")]
     pub timeout: u64,
 }

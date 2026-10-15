@@ -537,3 +537,216 @@ fn conflict_hints_match_the_conflict() {
             .contains("revision mismatch")
     );
 }
+
+fn deploy_options(timeout: u64) -> crate::cmd::deploy::DeployOpts {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Options {
+        #[command(flatten)]
+        deploy: crate::cmd::deploy::DeployOpts,
+    }
+    let mut opts = Options::parse_from(["test", "--no-wait", "--skip-inspection"]).deploy;
+    opts.wait.timeout = timeout;
+    opts
+}
+
+#[test]
+fn deploy_waits_for_validation_even_with_no_wait_and_skip_inspection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let server = MockServer::start();
+    let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let polls = Arc::new(AtomicUsize::new(0));
+    server.mock(|when, then| {
+        when.method(GET).path(format!("{}/apps", proj()));
+        then.status(200).json_body(json!({"items": []}));
+    });
+    let count = polls.clone();
+    let inspection = server.mock(|when, then| {
+        when.method(GET)
+            .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+        then.respond_with(move |_| {
+            let body = match count.fetch_add(1, Ordering::SeqCst) {
+                0 => json!({"state":"pending","error":"compiler-unavailable","inspection":null}),
+                1 => json!({"state":"validating","error":null,"inspection":null}),
+                _ => {
+                    json!({"state":"valid","error":null,"inspection":{"http":true,"command":false}})
+                }
+            };
+            httpmock::HttpMockResponse::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .build()
+        });
+    });
+    let count = polls.clone();
+    let deployment = server.mock(|when, then| {
+        when.method(POST)
+            .path(format!("{}/apps/deploy", proj()))
+            .json_body_includes(json!({"triggers":{"http":true,"manual":false}}).to_string());
+        then.respond_with(move |_| {
+            let status = if count.load(Ordering::SeqCst) >= 3 {
+                202
+            } else {
+                409
+            };
+            httpmock::HttpMockResponse::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(json!({"id":OP,"state":"pending","resource_id":APP}).to_string())
+                .build()
+        });
+    });
+    crate::cmd::deploy::run_apps(
+        &mut app(&server),
+        crate::cmd::deploy::AppsDeployArgs {
+            name: "first-upload".into(),
+            artifact: artifact.into(),
+            opts: deploy_options(10),
+        },
+    )
+    .unwrap();
+    inspection.assert_calls(3);
+    deployment.assert_calls(1);
+}
+
+#[test]
+fn deploy_never_submits_on_unvalidated_or_unreadable_inspection() {
+    for (status, body, expected) in [
+        (
+            200,
+            json!({"state":"pending","error":"compiler-unavailable"}),
+            "timed out",
+        ),
+        (200, json!({"state":"validating"}), "timed out"),
+        (
+            200,
+            json!({"state":"rejected","error":"unsupported-import"}),
+            "unsupported-import",
+        ),
+        (
+            200,
+            json!({"state":"unknown"}),
+            "unexpected component validation state",
+        ),
+        (
+            403,
+            json!({"error":"forbidden","code":"forbidden"}),
+            "could not inspect",
+        ),
+    ] {
+        let server = MockServer::start();
+        let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/apps", proj()));
+            then.status(200).json_body(json!({"items":[]}));
+        });
+        let inspection = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+            then.status(status).json_body(body);
+        });
+        let deployment = server.mock(|when, then| {
+            when.method(POST).path(format!("{}/apps/deploy", proj()));
+            then.status(202)
+                .json_body(json!({"id":OP,"state":"pending"}));
+        });
+        let err = crate::cmd::deploy::run_apps(
+            &mut app(&server),
+            crate::cmd::deploy::AppsDeployArgs {
+                name: "first-upload".into(),
+                artifact: artifact.into(),
+                opts: deploy_options(1),
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains(expected), "{err:#}");
+        assert!(inspection.calls() >= 1);
+        deployment.assert_calls(0);
+    }
+}
+
+#[test]
+fn validation_deadline_prevents_late_success_retry_after_and_zero_budget_deploys() {
+    use std::time::Instant;
+    for (status, delay, timeout, expected_reads) in [
+        (200, Duration::from_secs(3), 1, 1),
+        (503, Duration::ZERO, 1, 1),
+        (200, Duration::ZERO, 0, 0),
+    ] {
+        let server = MockServer::start();
+        let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/apps", proj()));
+            then.status(200).json_body(json!({"items":[]}));
+        });
+        let inspection = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+            then.status(status)
+                .delay(delay)
+                .header("retry-after", "10")
+                .json_body(json!({"state":"valid","inspection":{"http":true,"command":false}}));
+        });
+        let deployment = server.mock(|when, then| {
+            when.method(POST).path(format!("{}/apps/deploy", proj()));
+            then.status(202)
+                .json_body(json!({"id":OP,"state":"pending"}));
+        });
+        let started = Instant::now();
+        let err = crate::cmd::deploy::run_apps(
+            &mut app(&server),
+            crate::cmd::deploy::AppsDeployArgs {
+                name: "late-validation".into(),
+                artifact: artifact.into(),
+                opts: deploy_options(timeout),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "deadline was not bounded"
+        );
+        assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+        inspection.assert_calls(expected_reads);
+        deployment.assert_calls(0);
+    }
+}
+
+#[test]
+fn request_deadline_includes_response_body_reads() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        let body = r#"{"state":"valid"}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        stream.write_all(&body.as_bytes()[..1]).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = stream.write_all(&body.as_bytes()[1..]);
+    });
+    let client = Client::new(&format!("http://{address}"), Some("test-key".into()), false).unwrap();
+    let started = Instant::now();
+    let result = client.get_until("/inspection", &[], started + Duration::from_secs(1));
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert!(result.is_err(), "late valid response escaped the deadline");
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "body read was not bounded: {elapsed:?}"
+    );
+}

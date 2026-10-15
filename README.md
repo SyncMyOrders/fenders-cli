@@ -46,6 +46,12 @@ fenders logs app -f                      # follow its output
 fenders run app --logs                   # trigger a manual run and print its logs
 ```
 
+Deploy waits for the uploaded component to finish validation before creating an app or
+attaching a version. This also applies with `--no-wait`, which only skips waiting for
+the deployment operation. `--timeout` bounds each validation or operation wait; a
+validation failure or timeout leaves the upload available for inspection without
+submitting a deployment. `--skip-inspection` cannot bypass required server validation.
+
 Deploying again to an existing app creates a new version and releases it:
 
 ```sh

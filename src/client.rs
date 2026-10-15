@@ -151,6 +151,16 @@ impl Client {
         self.send(Method::GET, path, query, Body::None)
     }
 
+    /// Bound the complete read, including response body and all retries, by one deadline.
+    pub fn get_until(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        deadline: Instant,
+    ) -> Result<Value> {
+        self.send_until(Method::GET, path, query, Body::None, Some(deadline))
+    }
+
     pub fn post(&self, path: &str, body: Value) -> Result<Value> {
         self.send(Method::POST, path, &[], Body::Json(body))
     }
@@ -174,6 +184,26 @@ impl Client {
         query: &[(String, String)],
         body: Body,
     ) -> Result<Value> {
+        self.send_until(method, path, query, body, None)
+    }
+
+    fn send_until(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(String, String)],
+        body: Body,
+        deadline: Option<Instant>,
+    ) -> Result<Value> {
+        let remaining = || -> Result<Option<Duration>> {
+            deadline
+                .map(|end| {
+                    end.checked_duration_since(Instant::now())
+                        .filter(|left| !left.is_zero())
+                        .ok_or_else(|| anyhow::anyhow!("request deadline exceeded"))
+                })
+                .transpose()
+        };
         let Some(token) = &self.token else {
             return Err(ApiError {
                 status: 401,
@@ -218,8 +248,12 @@ impl Client {
                     crate::ui::dim(&format!("→ {method} {url}{q}"), crate::ui::To::Err)
                 );
             }
+            if let Some(left) = remaining()? {
+                req = req.timeout(left.min(Duration::from_secs(300)));
+            }
             let started = Instant::now();
             let result = req.send();
+            remaining()?;
             let retry_after = match result {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
@@ -234,7 +268,10 @@ impl Client {
                     }
                     let transient = matches!(status, 429 | 502 | 503 | 504);
                     if !transient || attempt >= MAX_ATTEMPTS {
-                        return parse(resp);
+                        let parsed = parse(resp);
+                        // Parsing reads the body too; a late success must not escape.
+                        remaining()?;
+                        return parsed;
                     }
                     resp.headers()
                         .get("retry-after")
@@ -252,7 +289,8 @@ impl Client {
                     None
                 }
             };
-            std::thread::sleep(retry_after.unwrap_or(self.retry_base * 2u32.pow(attempt - 1)));
+            let delay = retry_after.unwrap_or(self.retry_base * 2u32.pow(attempt - 1));
+            std::thread::sleep(remaining()?.map_or(delay, |left| delay.min(left)));
         }
     }
 }
