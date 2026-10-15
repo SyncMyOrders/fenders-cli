@@ -537,3 +537,131 @@ fn conflict_hints_match_the_conflict() {
             .contains("revision mismatch")
     );
 }
+
+fn deploy_options(timeout: u64) -> crate::cmd::deploy::DeployOpts {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Options {
+        #[command(flatten)]
+        deploy: crate::cmd::deploy::DeployOpts,
+    }
+    let mut opts = Options::parse_from(["test", "--no-wait", "--skip-inspection"]).deploy;
+    opts.wait.timeout = timeout;
+    opts
+}
+
+#[test]
+fn deploy_waits_for_validation_even_with_no_wait_and_skip_inspection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let server = MockServer::start();
+    let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let polls = Arc::new(AtomicUsize::new(0));
+    server.mock(|when, then| {
+        when.method(GET).path(format!("{}/apps", proj()));
+        then.status(200).json_body(json!({"items": []}));
+    });
+    let count = polls.clone();
+    let inspection = server.mock(|when, then| {
+        when.method(GET)
+            .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+        then.respond_with(move |_| {
+            let body = match count.fetch_add(1, Ordering::SeqCst) {
+                0 => json!({"state":"pending","error":"compiler-unavailable","inspection":null}),
+                1 => json!({"state":"validating","error":null,"inspection":null}),
+                _ => {
+                    json!({"state":"valid","error":null,"inspection":{"http":true,"command":false}})
+                }
+            };
+            httpmock::HttpMockResponse::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .build()
+        });
+    });
+    let count = polls.clone();
+    let deployment = server.mock(|when, then| {
+        when.method(POST)
+            .path(format!("{}/apps/deploy", proj()))
+            .json_body_includes(json!({"triggers":{"http":true,"manual":false}}).to_string());
+        then.respond_with(move |_| {
+            let status = if count.load(Ordering::SeqCst) >= 3 {
+                202
+            } else {
+                409
+            };
+            httpmock::HttpMockResponse::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(json!({"id":OP,"state":"pending","resource_id":APP}).to_string())
+                .build()
+        });
+    });
+    crate::cmd::deploy::run_apps(
+        &mut app(&server),
+        crate::cmd::deploy::AppsDeployArgs {
+            name: "first-upload".into(),
+            artifact: artifact.into(),
+            opts: deploy_options(10),
+        },
+    )
+    .unwrap();
+    inspection.assert_calls(3);
+    deployment.assert_calls(1);
+}
+
+#[test]
+fn deploy_never_submits_on_unvalidated_or_unreadable_inspection() {
+    for (status, body, expected) in [
+        (
+            200,
+            json!({"state":"pending","error":"compiler-unavailable"}),
+            "timed out",
+        ),
+        (200, json!({"state":"validating"}), "timed out"),
+        (
+            200,
+            json!({"state":"rejected","error":"unsupported-import"}),
+            "unsupported-import",
+        ),
+        (
+            200,
+            json!({"state":"unknown"}),
+            "unexpected component validation state",
+        ),
+        (
+            403,
+            json!({"error":"forbidden","code":"forbidden"}),
+            "could not inspect",
+        ),
+    ] {
+        let server = MockServer::start();
+        let artifact = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        server.mock(|when, then| {
+            when.method(GET).path(format!("{}/apps", proj()));
+            then.status(200).json_body(json!({"items":[]}));
+        });
+        let inspection = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("{}/artifacts/{artifact}/inspection", proj()));
+            then.status(status).json_body(body);
+        });
+        let deployment = server.mock(|when, then| {
+            when.method(POST).path(format!("{}/apps/deploy", proj()));
+            then.status(202)
+                .json_body(json!({"id":OP,"state":"pending"}));
+        });
+        let err = crate::cmd::deploy::run_apps(
+            &mut app(&server),
+            crate::cmd::deploy::AppsDeployArgs {
+                name: "first-upload".into(),
+                artifact: artifact.into(),
+                opts: deploy_options(0),
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains(expected), "{err:#}");
+        inspection.assert_calls(1);
+        deployment.assert_calls(0);
+    }
+}
