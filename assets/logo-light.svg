@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="843" height="254" viewBox="0 0 842.8 254" role="img" aria-labelledby="fenders-logo-light-title">
+  <title id="fenders-logo-light-title">fenders.io</title>
+  <desc id="fenders-logo-light-desc">Horizontal logo; light variant; transparent background. Maritime fender symbol and vector-outlined lettering.</desc>
+  <defs>
+    <linearGradient id="fenders-logo-light-orange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#FF701D"/><stop offset=".38" stop-color="#FF5708"/><stop offset="1" stop-color="#DF3E04"/>
+    </linearGradient>
+    <linearGradient id="fenders-logo-light-domain" x1="0%" y1="0%" x2="100%" y2="35%">
+      <stop offset="0" stop-color="#FF6014"/><stop offset="1" stop-color="#DC3F06"/>
+    </linearGradient>
+    <linearGradient id="fenders-logo-light-sheen" x1="0%" y1="0%" x2="35%" y2="100%">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".36"/><stop offset=".6" stop-color="#FFFFFF" stop-opacity=".13"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="fenders-logo-light-body"><rect x="0" y="33" width="104" height="173" rx="52"/></clipPath>
+  </defs>
+  <g id="fenders-logo-light-symbol" transform="translate(24 24) scale(1)"><rect x="43" y="0" width="18" height="42" rx="9" fill="#14212D"/><g clip-path="url(#fenders-logo-light-body)"><rect x="0" y="33" width="104" height="173" rx="52" fill="url(#fenders-logo-light-orange)"/><path d="M0 82H104V92H0ZM0 146H104V156H0Z" fill="#14212D"/><path d="M9 151V86C9 65 23 46 44 43C52 42 54 49 49 55C34 61 24 72 24 88V153C24 174 33 190 47 198C25 192 9 174 9 151Z" fill="url(#fenders-logo-light-sheen)"/></g><path d="M46 31V10C46 6 48 4 51 4" fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" opacity=".30"/></g><g id="fenders-logo-light-wordmark" transform="translate(160 70) scale(0.488)" fill-rule="evenodd">
+      <g transform="translate(-15 -10)" fill="#14212D">
+        <path d="M39 80V64C39 30 64 11 100 11C113 11 124 12 134 15V52C125 50 119 50 109 50C93 50 84 58 84 73V80H130V118H84V232H39V118H15V80Z"/><path d="M287 155C287 106 257 75 210 75C162 75 126 109 126 156C126 203 161 236 213 236C245 236 267 226 282 207L251 182C241 193 229 199 213 199C191 199 178 188 173 168H286C287 164 287 160 287 155ZM173 142C177 123 190 113 208 113C227 113 240 125 243 142Z"/><path d="M297 80H342V98C354 83 371 76 392 76C428 76 446 100 446 143V232H401V149C401 126 392 115 374 115C354 115 342 128 342 153V232H297Z"/><path d="M579 20H624V232H581V214C569 229 552 236 531 236C488 236 455 203 455 156C455 109 488 76 531 76C552 76 568 83 579 96ZM580 156C580 131 564 114 542 114C519 114 503 131 503 156C503 181 519 198 542 198C564 198 580 181 580 156Z"/>
+        <path d="M287 155C287 106 257 75 210 75C162 75 126 109 126 156C126 203 161 236 213 236C245 236 267 226 282 207L251 182C241 193 229 199 213 199C191 199 178 188 173 168H286C287 164 287 160 287 155ZM173 142C177 123 190 113 208 113C227 113 240 125 243 142Z" transform="translate(509 0)"/><path d="M806 80H850V105C859 86 876 76 899 76H906V120C900 119 895 119 891 119C865 119 852 133 852 159V232H806Z"/><path d="M1025 90L1002 121C988 111 974 109 962 109C950 109 942 113 942 120C942 128 952 130 969 135L983 139C1017 148 1040 157 1040 185C1040 218 1013 236 974 236C944 236 921 229 904 214L927 183C941 195 958 200 974 200C988 200 995 196 995 190C995 182 985 179 968 175L954 171C921 162 907 149 907 124C907 95 932 76 969 76C993 76 1013 81 1025 90Z"/>
+        <path d="M1104 207A27 27 0 1 1 1050 207A27 27 0 1 1 1104 207ZM1171 36A26 26 0 1 1 1119 36A26 26 0 1 1 1171 36ZM1122 80H1169V232H1122ZM1275 75C1327 75 1365 110 1365 156C1365 202 1327 236 1275 236C1223 236 1186 202 1186 156C1186 110 1223 75 1275 75ZM1275 115C1251 115 1235 132 1235 156C1235 180 1251 197 1275 197C1299 197 1316 180 1316 156C1316 132 1299 115 1275 115Z" fill="url(#fenders-logo-light-domain)"/>
+      </g>
+    </g>
+</svg>

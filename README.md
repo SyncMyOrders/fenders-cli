@@ -1,3 +1,12 @@
+<p align="center">
+  <a href="https://fenders.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+      <img src="assets/logo-light.svg" alt="fenders.io" width="320">
+    </picture>
+  </a>
+</p>
+
 # fenders-cli
 
 `fenders` is the command line for [Fenders](https://fenders.io): deploy and run WebAssembly
@@ -5,16 +14,6 @@
 [Fenders customer API](https://platform.fenders.io/api/openapi.json).
 
 It ships as a single native binary with no runtime dependencies.
-
-```
-    ▐▌
-  ▄████▄
-  ██████    fenders.io
-  ▀▀▀▀▀▀    WASM sandboxes in hardware-isolated microVMs
-  ██████
-  ▀▀▀▀▀▀
-  ▀████▀
-```
 
 ## Install
 
