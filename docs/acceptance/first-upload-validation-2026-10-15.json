@@ -63,5 +63,32 @@
     "Timeout, unavailable compiler, forbidden inspection and unknown state are covered by regression tests.",
     "Real worker validation; deployment and activation created no command runs or executions."
   ],
-  "retained_private_evidence": "/Users/volodymyrrudyi/work/fenders/run/cli-validation-20261015/"
+  "retained_private_evidence": "/Users/volodymyrrudyi/work/fenders/run/cli-validation-20261015/",
+  "deadline_review": {
+    "source_commit": "dec0039e5cc8798ad835b4af5e1d0db4f59c6271",
+    "observed_at": "2026-10-15T12:32:55.356Z",
+    "behavior": "One absolute validation deadline bounds every request, response body, retry delay and poll. Responses received after expiry cannot authorize a deployment.",
+    "controlled_http_checks": [
+      "One-second validation deadline rejects a three-second valid response, with zero deployment requests.",
+      "One-second deadline bounds Retry-After: 10 and prevents another request after expiry.",
+      "Zero timeout performs no inspection or deployment request.",
+      "A response body delayed three seconds is interrupted by the one-second request deadline."
+    ],
+    "live": {
+      "origin": "https://platform.fenders.io",
+      "app": "5fe4e8defeaa4d0e838c2611028f5e4d",
+      "artifact": "d4052dcfa4354be48745a21ac31f9c4a",
+      "sha256": "91cd52d07a61b7899de5a04beff16a6c9e5cf8e184435370df1d4499274d6146",
+      "inspection_reads": 4,
+      "deployment_requests": 1,
+      "state_before_cleanup": "ready",
+      "command_run": null,
+      "cleanup": "stopped"
+    },
+    "checks": [
+      "cargo test --locked",
+      "cargo clippy --all-targets --locked -- -D warnings",
+      "cargo build --release --locked"
+    ]
+  }
 }
