@@ -193,7 +193,8 @@ pub fn artifact_ref(app: &mut App, s: &str) -> Result<String> {
 }
 
 /// Look for problems in an artifact inspection record. Returns an error
-/// message when the component is clearly not deployable.
+/// message when the component is clearly not deployable. Server-provided text
+/// is sanitized here because callers print it directly (e.g. via `ui::warn`).
 pub fn check_inspection(insp: &Value) -> Option<String> {
     let bad_state = ["state", "status", "validation", "result"]
         .iter()
@@ -206,7 +207,10 @@ pub fn check_inspection(insp: &Value) -> Option<String> {
             .then(|| s.to_string())
         });
     if let Some(e) = insp.get("error").and_then(Value::as_str) {
-        return Some(format!("the component did not pass validation: {e}"));
+        return Some(format!(
+            "the component did not pass validation: {}",
+            ui::sanitize(e)
+        ));
     }
     let invalid_flag = insp.get("valid").and_then(Value::as_bool) == Some(false);
     let errors: Vec<String> = ["errors", "problems"]
@@ -214,9 +218,12 @@ pub fn check_inspection(insp: &Value) -> Option<String> {
         .filter_map(|k| insp.get(*k)?.as_array())
         .flatten()
         .map(|e| {
-            e.as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| e.to_string())
+            ui::sanitize(
+                &e.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| e.to_string()),
+            )
+            .into_owned()
         })
         .collect();
     if bad_state.is_some() || invalid_flag || !errors.is_empty() {
@@ -255,4 +262,26 @@ pub fn read_secret(prompt: &str, confirm_twice: bool) -> Result<String> {
         p = p.with_confirmation("Confirm", "Values did not match");
     }
     Ok(p.interact()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_inspection;
+    use serde_json::json;
+
+    #[test]
+    fn inspection_problems_cannot_inject_terminal_escapes() {
+        let evil = "bad\x1b]52;c;ZXZpbA==\x07\x1b[2J";
+        for insp in [
+            json!({"error": evil}),
+            json!({"valid": false, "errors": [evil]}),
+        ] {
+            let msg = check_inspection(&insp).expect("a problem");
+            assert!(!msg.chars().any(|c| c.is_control()), "{msg:?}");
+        }
+        assert_eq!(
+            check_inspection(&json!({"error": null, "inspection": {"http": true}})),
+            None
+        );
+    }
 }
